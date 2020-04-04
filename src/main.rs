@@ -1,97 +1,56 @@
-use std::net::{TcpListener, TcpStream};
-use std::io::{Read, Write};
-use std::thread::spawn;
-use std::time::Duration;
+//! [D'iver](https://malazan.fandom.com/wiki/D%27ivers) acts a Divider proxy for a TCP stream.
+//!
+//! It will send all TCP traffic it receives to two different endpoints (designated 'real'
+//! and 'test'). The response from the 'real' endpoint is returned upstream to the client,
+//! and the 'test' response is dropped.
+//!
+//! This allows for direct, live comparison of the effect on an application when introducing new
+//! features, bug fixes, optimizations, etc.
+//!
+//! # Usage
+//! * Create a `config.yaml` file:
+//! ```yaml
+//! real: real.endpoint.com:80
+//! test: test.endpoint.com:80
+//! port: 80
+//! ```
+//! * Run the binary:
+//! `./target/release/diver`
+//! * Point clients at the IP address + port of the current machine
+use config::{Config, ConfigError, File};
+use env_logger;
+use serde::Deserialize;
 
-fn downstream_receiver_drop(mut downstream: TcpStream) {
-    downstream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
-    let mut buf = Vec::with_capacity(2048);
-    buf.resize_with(2048, || 0);
-    let mut no_read_count = 0;
-    while no_read_count < 100 {
-        let last_read = match downstream.read(&mut buf) {
-            Ok(n) => n,
-            Err(e) => panic!("drop read error: {:?}", e),
-        };
+#[doc(hidden)]
+mod diver;
 
-        if last_read == 0 {
-            no_read_count += 1;
-        }
-        buf.clear();
+#[derive(Deserialize)]
+pub struct AppConfig {
+    /// The 'real' endpoint, the response from this endpoint is what gets returned upstream.
+    real: String,
+
+    /// The 'test' endpoint, the response from this endpoint will be dropped.
+    test: String,
+
+    /// The port to listen for TCP connections.
+    port: String,
+}
+
+impl AppConfig {
+    fn load() -> Result<Self, ConfigError> {
+        let mut s = Config::new();
+        s.merge(File::with_name("config.yaml"))?;
+        s.try_into()
     }
 }
 
-fn downstream_receiver(mut downstream: TcpStream, mut upstream: TcpStream) {
-    downstream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
-    let mut buf = Vec::with_capacity(2048);
-    buf.resize_with(2048, || 0);
-    let mut no_read_count = 0;
-    while no_read_count < 100 {
-        let last_read = match downstream.read(&mut buf) {
-            Ok(n) => n,
-            Err(e) => panic!("read error: {:?}", e),
-        };
+#[doc(hidden)]
+fn main() {
+    env_logger::init();
+    let cfg = match AppConfig::load() {
+        Ok(c) => c,
+        Err(e) => panic!("Unable to parse config: {:?}", e),
+    };
 
-        if last_read > 0 {
-            no_read_count = 0;
-            match upstream.write(&mut buf[..last_read]) {
-                Ok(_) => (),
-                Err(e) => panic!("write error: {:?}", e),
-            }
-        } else {
-            no_read_count += 1;
-        }
-        buf.clear();
-    }
-}
-
-fn handle_connection(mut stream: TcpStream) {
-    stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
-
-    let mut downstream = TcpStream::connect("localhost:6080").unwrap();
-    let d_clone = downstream.try_clone().unwrap();
-    let s_clone = stream.try_clone().unwrap();
-    spawn(move || downstream_receiver(d_clone, s_clone));
-
-    let mut downstream2 = TcpStream::connect("localhost:6081").unwrap();
-    let d2_clone = downstream2.try_clone().unwrap();
-    spawn(move || downstream_receiver_drop(d2_clone));
-
-    let mut buf = Vec::with_capacity(2048);
-    buf.resize_with(2048, || 0);
-    let mut no_read_count = 0;
-    while no_read_count < 100 {
-        let last_read = match stream.read(&mut buf) {
-            Ok(n) => n,
-            Err(e) => panic!("handle_connection err: {:?}", e),
-        };
-
-        if last_read > 0 {
-            match downstream.write(&mut buf[..last_read]) {
-                Ok(_) => (),
-                Err(e) => panic!("downstream write err: {:?}", e),
-            }
-
-            match downstream2.write(&mut buf[..last_read]) {
-                Ok(_) => (),
-                Err(e) => panic!("downstream2 write err: {:?}", e),
-            }
-        } else {
-            no_read_count += 1;
-        }
-        buf.clear();
-    }
-}
-
-fn main() -> std::io::Result<()> {
-    let listener = TcpListener::bind("localhost:8008").unwrap();
-    for stream in listener.incoming() {
-        match stream {
-            Ok(s) => {
-                spawn(move || handle_connection(s));
-            }
-            Err(e) => println!("no stream: {:?}", e),
-        }
-    }
-    Ok(())
+    diver::run(cfg);
 }
