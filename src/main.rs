@@ -34,6 +34,9 @@ pub struct AppConfig {
 
     /// The port to listen for TCP connections.
     port: String,
+
+    /// The maximum number of concurrent connections D'iver will accept (default: 1000).
+    max_conn: Option<usize>,
 }
 
 impl AppConfig {

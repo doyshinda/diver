@@ -3,7 +3,11 @@ use log::debug;
 use std::{
     io::{Error, ErrorKind, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
-    thread::spawn,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    thread::{sleep, spawn},
     time::Duration,
 };
 
@@ -60,7 +64,7 @@ fn downstream_receiver(mut downstream: TcpStream, mut upstream: TcpStream, drop:
     downstream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
-    let buflen: usize = 1000;
+    let buflen: usize = 2048;
     let mut buf = Vec::with_capacity(buflen);
     reset_buf(&mut buf, buflen);
 
@@ -78,7 +82,8 @@ fn downstream_receiver(mut downstream: TcpStream, mut upstream: TcpStream, drop:
     }
 }
 
-fn handle_connection(mut upstream: TcpStream, addr: &str, drop_addr: &str) {
+fn handle_connection(mut upstream: TcpStream, addr: &str, drop_addr: &str, num_conn: Arc<AtomicUsize>) {
+    num_conn.fetch_add(1, Ordering::Relaxed);
     let mut downstream = TcpStream::connect(addr).unwrap();
     let d_clone = downstream.try_clone().unwrap();
     let u_clone = upstream.try_clone().unwrap();
@@ -89,7 +94,7 @@ fn handle_connection(mut upstream: TcpStream, addr: &str, drop_addr: &str) {
     let u2_clone = upstream.try_clone().unwrap();
     spawn(move || downstream_receiver(d2_clone, u2_clone, true));
 
-    let buflen: usize = 1000;
+    let buflen: usize = 2048;
     let mut buf = Vec::with_capacity(buflen);
     reset_buf(&mut buf, buflen);
 
@@ -114,19 +119,28 @@ fn handle_connection(mut upstream: TcpStream, addr: &str, drop_addr: &str) {
             break;
         }
     }
+    num_conn.fetch_sub(1, Ordering::Relaxed);
 }
 
 pub fn run(cfg: AppConfig) {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", &cfg.port)).unwrap();
-    for stream in listener.incoming() {
-        match stream {
-            Ok(s) => {
-                debug!("new connection from: {}", string_addr(s.peer_addr()));
-                let real = cfg.real.clone();
-                let test = cfg.test.clone();
-                spawn(move || handle_connection(s, &real, &test));
+    let num_conn = Arc::new(AtomicUsize::new(0));
+    let max_conn = cfg.max_conn.unwrap_or(1000);
+    loop {
+        if num_conn.load(Ordering::Relaxed) < max_conn {
+            let accepted = listener.accept();
+            match accepted {
+                Ok((s, a)) => {
+                    debug!("new connection from: {}", string_addr(Ok(a)));
+                    let real = cfg.real.clone();
+                    let test = cfg.test.clone();
+                    let n_conn = num_conn.clone();
+                    spawn(move || handle_connection(s, &real, &test, n_conn));
+                }
+                Err(e) => println!("no stream: {:?}", e),
             }
-            Err(e) => println!("no stream: {:?}", e),
+        } else {
+            sleep(Duration::from_millis(5));
         }
     }
 }
