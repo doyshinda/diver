@@ -4,8 +4,8 @@ use std::{
     io::{Error, ErrorKind, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{
-        Arc,
         atomic::{AtomicUsize, Ordering},
+        Arc,
     },
     thread::{sleep, spawn},
     time::Duration,
@@ -60,13 +60,17 @@ fn handle_write(stream: &mut TcpStream, buf: &mut [u8]) {
     };
 }
 
-fn downstream_receiver(mut downstream: TcpStream, mut upstream: TcpStream, drop: bool) {
+fn downstream_receiver(
+    mut downstream: TcpStream,
+    mut upstream: TcpStream,
+    buf_len: usize,
+    drop: bool,
+) {
     downstream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
-    let buflen: usize = 2048;
-    let mut buf = Vec::with_capacity(buflen);
-    reset_buf(&mut buf, buflen);
+    let mut buf = Vec::with_capacity(buf_len);
+    reset_buf(&mut buf, buf_len);
 
     loop {
         let last_read = handle_read(&mut downstream, &mut buf);
@@ -75,28 +79,33 @@ fn downstream_receiver(mut downstream: TcpStream, mut upstream: TcpStream, drop:
             if !drop {
                 handle_write(&mut upstream, &mut buf[..last_read]);
             }
-            reset_buf(&mut buf, buflen);
+            reset_buf(&mut buf, buf_len);
         } else {
             break;
         }
     }
 }
 
-fn handle_connection(mut upstream: TcpStream, addr: &str, drop_addr: &str, num_conn: Arc<AtomicUsize>) {
+fn handle_connection(
+    mut upstream: TcpStream,
+    addr: &str,
+    drop_addr: &str,
+    num_conn: Arc<AtomicUsize>,
+    buf_len: usize,
+) {
     num_conn.fetch_add(1, Ordering::Relaxed);
     let mut downstream = TcpStream::connect(addr).unwrap();
     let d_clone = downstream.try_clone().unwrap();
     let u_clone = upstream.try_clone().unwrap();
-    spawn(move || downstream_receiver(d_clone, u_clone, false));
+    spawn(move || downstream_receiver(d_clone, u_clone, buf_len, false));
 
     let mut downstream2 = TcpStream::connect(drop_addr).unwrap();
     let d2_clone = downstream2.try_clone().unwrap();
     let u2_clone = upstream.try_clone().unwrap();
-    spawn(move || downstream_receiver(d2_clone, u2_clone, true));
+    spawn(move || downstream_receiver(d2_clone, u2_clone, buf_len, true));
 
-    let buflen: usize = 2048;
-    let mut buf = Vec::with_capacity(buflen);
-    reset_buf(&mut buf, buflen);
+    let mut buf = Vec::with_capacity(buf_len);
+    reset_buf(&mut buf, buf_len);
 
     upstream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -114,7 +123,7 @@ fn handle_connection(mut upstream: TcpStream, addr: &str, drop_addr: &str, num_c
         if bytes_recv > 0 {
             handle_write(&mut downstream, &mut buf[..bytes_recv]);
             handle_write(&mut downstream2, &mut buf[..bytes_recv]);
-            reset_buf(&mut buf, buflen);
+            reset_buf(&mut buf, buf_len);
         } else {
             break;
         }
@@ -126,6 +135,7 @@ pub fn run(cfg: AppConfig) {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", &cfg.port)).unwrap();
     let num_conn = Arc::new(AtomicUsize::new(0));
     let max_conn = cfg.max_conn.unwrap_or(1000);
+    let buf_size = cfg.buffer_size_bytes;
     loop {
         if num_conn.load(Ordering::Relaxed) < max_conn {
             let accepted = listener.accept();
@@ -135,7 +145,7 @@ pub fn run(cfg: AppConfig) {
                     let real = cfg.real.clone();
                     let test = cfg.test.clone();
                     let n_conn = num_conn.clone();
-                    spawn(move || handle_connection(s, &real, &test, n_conn));
+                    spawn(move || handle_connection(s, &real, &test, n_conn, buf_size));
                 }
                 Err(e) => println!("no stream: {:?}", e),
             }

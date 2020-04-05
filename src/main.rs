@@ -35,6 +35,12 @@ pub struct AppConfig {
     /// The port to listen for TCP connections.
     port: String,
 
+    /// The buffer size to hold data read from a TCP stream before proxying it. For ideal
+    /// performance, this size should be larger than the maximum request size being issued to
+    /// the downstream host. If this buffer is smaller than the request size, there will be a
+    /// noticable negative impact in both latency and throughput to the application.
+    buffer_size_bytes: usize,
+
     /// The maximum number of concurrent connections D'iver will accept (default: 1000).
     max_conn: Option<usize>,
 }
