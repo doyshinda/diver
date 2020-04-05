@@ -9,12 +9,16 @@ and the 'test' response is dropped.
 This allows for direct, live comparison of the effect on an application when introducing new
 features, bug fixes, optimizations, etc.
 
+# Overview
+![Overview](overview.png)
+
 # Usage
 * Create a `config.yaml` file:
 ```yaml
 real: real.endpoint.com:80
 test: test.endpoint.com:80
 port: 80
+buffer_size_bytes: 2048
 ```
 * Run the binary:
 `./target/release/diver`
